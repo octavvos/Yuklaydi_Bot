@@ -39,3 +39,32 @@ Yangi foydalanuvchi botga kirganda adminlarga avtomatik xabar keladi.
 - Telegram Bot API orqali fayl hajmi **50 MB** gacha. Video 720p gacha olinadi, kattaroq bo'lsa bot ogohlantiradi.
 - Instagram ba'zan login talab qiladi — unda brauzerdan `cookies.txt` eksport qilib, `COOKIES_FILE` ga ko'rsating.
 - yt-dlp ni vaqti-vaqti bilan yangilab turing: `./venv/bin/pip install -U yt-dlp`
+
+## Serverga joylash (Ubuntu/Debian)
+Python 3.10 yoki undan yangi versiya kerak.
+
+```bash
+sudo apt update && sudo apt install -y git python3-venv ffmpeg
+git clone https://github.com/octavvos/Yuklaydi_Bot.git
+cd Yuklaydi_Bot
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cp .env.example .env && nano .env        # BOT_TOKEN va ADMIN_IDS ni yozing
+./venv/bin/python bot.py                 # sinab ko'ring, keyin Ctrl+C
+```
+
+Doimiy ishlashi uchun (server qayta yonganda ham o'zi ishga tushadi):
+```bash
+sed -i "s/USER/$USER/g" deploy/yuklaydi-bot.service
+sudo cp deploy/yuklaydi-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now yuklaydi-bot
+sudo journalctl -u yuklaydi-bot -f       # loglarni ko'rish
+```
+
+Yangilash:
+```bash
+git pull && ./venv/bin/pip install -r requirements.txt && sudo systemctl restart yuklaydi-bot
+```
+
+> Bitta token bilan faqat bitta bot ishlay oladi: serverda ishga tushirgandan keyin kompyuteringizdagi botni o'chiring.

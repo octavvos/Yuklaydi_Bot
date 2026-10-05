@@ -1,0 +1,18 @@
+# Serverda: /etc/systemd/system/yuklaydi-bot.service
+# USER va yo'llarni o'zingiznikiga moslang.
+[Unit]
+Description=Yuklaydi Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=USER
+WorkingDirectory=/home/USER/Yuklaydi_Bot
+ExecStart=/home/USER/Yuklaydi_Bot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
