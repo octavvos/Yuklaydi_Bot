@@ -67,4 +67,9 @@ Yangilash:
 git pull && ./venv/bin/pip install -r requirements.txt && sudo systemctl restart yuklaydi-bot
 ```
 
+Yoki hammasini bitta skript bilan (root sifatida, serverda):
+```bash
+curl -fsSLO https://raw.githubusercontent.com/octavvos/Yuklaydi_Bot/main/deploy/install.sh && bash install.sh
+```
+
 > Bitta token bilan faqat bitta bot ishlay oladi: serverda ishga tushirgandan keyin kompyuteringizdagi botni o'chiring.
