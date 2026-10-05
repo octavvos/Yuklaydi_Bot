@@ -9,26 +9,28 @@ import uuid
 from pathlib import Path
 
 import yt_dlp
-from aiogram import Bot, Dispatcher, F
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.enums import ChatAction, ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
     CallbackQuery,
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    TelegramObject,
 )
-from dotenv import load_dotenv
 
-load_dotenv()
+import admin
+import db
+from config import ADMIN_IDS, BOT_TOKEN, COOKIES_FILE, PROXY
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-COOKIES_FILE = os.getenv("COOKIES_FILE")  # ixtiyoriy: Instagram/YouTube uchun cookies.txt
-PROXY = os.getenv("PROXY")  # ixtiyoriy: masalan http://127.0.0.1:8080 yoki socks5://127.0.0.1:1080
 MAX_FILE_SIZE = 50 * 1024 * 1024  # Telegram Bot API cheklovi: 50 MB
 MAX_PARALLEL = 3  # bir vaqtda nechta yuklash
 
@@ -59,6 +61,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("savebot")
 
 dp = Dispatcher()
+router = Router(name="user")
 semaphore = asyncio.Semaphore(MAX_PARALLEL)
 # callback_data 64 baytdan oshmasligi kerak, shuning uchun havolani qisqa kalit bilan saqlaymiz
 pending_links: dict[str, str] = {}
@@ -66,6 +69,33 @@ pending_links: dict[str, str] = {}
 
 class TooLargeError(Exception):
     pass
+
+
+class TrackUsersMiddleware(BaseMiddleware):
+    """Har bir xabar/tugma bosilganda foydalanuvchini bazaga yozadi, yangisi haqida adminlarga xabar beradi."""
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if user and not user.is_bot:
+            is_new = db.upsert_user(user.id, user.username, user.full_name, user.language_code)
+            if is_new and ADMIN_IDS:
+                await notify_admins(data["bot"], user)
+        return await handler(event, data)
+
+
+async def notify_admins(bot: Bot, user) -> None:
+    uname = f" (@{user.username})" if user.username else ""
+    text = (
+        f"🆕 Yangi foydalanuvchi: <a href=\"tg://user?id={user.id}\">{html.escape(user.full_name)}</a>"
+        f"{html.escape(uname)}\n🆔 <code>{user.id}</code> · 👥 Jami: {db.count_users()}"
+    )
+    for admin_id in ADMIN_IDS:
+        if admin_id == user.id:
+            continue
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception as e:  # admin botni bloklagan yoki /start bosmagan bo'lishi mumkin
+            log.warning("Adminga (%s) xabar yuborilmadi: %s", admin_id, e)
 
 
 def choice_keyboard(key: str) -> InlineKeyboardMarkup:
@@ -131,7 +161,7 @@ def download(url: str, mode: str, out_dir: str) -> tuple[Path, dict]:
     return file, info
 
 
-@dp.message(CommandStart())
+@router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "👋 Salom! Menga <b>YouTube</b> yoki <b>Instagram</b> havolasini yuboring.\n"
@@ -139,7 +169,12 @@ async def cmd_start(message: Message) -> None:
     )
 
 
-@dp.message(F.text.regexp(URL_RE))
+@router.message(Command("id"))
+async def cmd_id(message: Message) -> None:
+    await message.answer(f"🆔 Sizning Telegram ID: <code>{message.from_user.id}</code>")
+
+
+@router.message(F.text.regexp(URL_RE))
 async def on_link(message: Message) -> None:
     url = URL_RE.search(message.text).group(0)
     key = uuid.uuid4().hex[:12]
@@ -147,12 +182,12 @@ async def on_link(message: Message) -> None:
     await message.reply("Qaysi formatda yuklab beray?", reply_markup=choice_keyboard(key))
 
 
-@dp.message(F.text)
+@router.message(F.text)
 async def on_other_text(message: Message) -> None:
     await message.answer("⚠️ Iltimos, YouTube yoki Instagram havolasini yuboring.")
 
 
-@dp.callback_query(F.data.regexp(r"^[vax]:[0-9a-f]{12}$"))
+@router.callback_query(F.data.regexp(r"^[vax]:[0-9a-f]{12}$"))
 async def on_choice(call: CallbackQuery, bot: Bot) -> None:
     action, key = call.data.split(":", 1)
     url = pending_links.pop(key, None)
@@ -172,6 +207,7 @@ async def on_choice(call: CallbackQuery, bot: Bot) -> None:
     )
 
     chat_id = call.message.chat.id
+    user_id = call.from_user.id
     tmp_dir = tempfile.mkdtemp(prefix="savebot_")
     try:
         async with semaphore:
@@ -204,10 +240,13 @@ async def on_choice(call: CallbackQuery, bot: Bot) -> None:
                 duration=int(info["duration"]) if info.get("duration") else None,
             )
         await status.delete()
+        db.log_download(user_id, url, mode, ok=True, title=title)
     except TooLargeError:
+        db.log_download(user_id, url, mode, ok=False)
         await status.edit_text("⚠️ Fayl 50 MB dan katta, Telegram orqali yuborib bo'lmaydi.")
     except yt_dlp.utils.DownloadError as e:
         log.warning("Download error for %s: %s", url, e)
+        db.log_download(user_id, url, mode, ok=False)
         msg = str(e).lower()
         if "login" in msg or "private" in msg or "cookies" in msg:
             text = "🔒 Bu kontent yopiq yoki kirish talab qiladi."
@@ -216,9 +255,31 @@ async def on_choice(call: CallbackQuery, bot: Bot) -> None:
         await status.edit_text(text)
     except Exception:
         log.exception("Unexpected error for %s", url)
+        db.log_download(user_id, url, mode, ok=False)
         await status.edit_text("❌ Kutilmagan xatolik yuz berdi. Keyinroq urinib ko'ring.")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def set_commands(bot: Bot) -> None:
+    user_cmds = [
+        BotCommand(command="start", description="Botni ishga tushirish"),
+        BotCommand(command="id", description="Telegram ID ni bilish"),
+    ]
+    await bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
+    # Admin buyruqlari faqat adminlarning menyusida ko'rinadi
+    admin_cmds = user_cmds + [
+        BotCommand(command="admin", description="Admin panel"),
+        BotCommand(command="users", description="Foydalanuvchilar ro'yxati"),
+        BotCommand(command="user", description="Foydalanuvchi ma'lumotlari: /user ID"),
+        BotCommand(command="stats", description="Statistika"),
+        BotCommand(command="export", description="Ro'yxatni CSV faylda olish"),
+    ]
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception as e:  # admin hali botga /start bosmagan bo'lsa
+            log.warning("Admin (%s) uchun menyu o'rnatilmadi: %s", admin_id, e)
 
 
 async def main() -> None:
@@ -241,6 +302,15 @@ async def main() -> None:
             delay = min(delay * 2, 60)
 
     log.info("Bot ishga tushdi: @%s", me.username)
+    if not ADMIN_IDS:
+        log.warning("ADMIN_IDS bo'sh: admin buyruqlari ishlamaydi. .env ga ADMIN_IDS=... yozing (ID ni /id orqali bilasiz).")
+
+    db.init()
+    dp.message.outer_middleware(TrackUsersMiddleware())
+    dp.callback_query.outer_middleware(TrackUsersMiddleware())
+    # admin router birinchi: aks holda "/users" kabi buyruqlarni oddiy matn handleri ushlab qoladi
+    dp.include_routers(admin.router, router)
+    await set_commands(bot)
     await dp.start_polling(bot)
 
 

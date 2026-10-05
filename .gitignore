@@ -19,3 +19,7 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Baza
+*.db
+*.db-journal
