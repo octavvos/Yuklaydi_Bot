@@ -1,0 +1,21 @@
+# Maxfiy fayllar
+.env
+cookies.txt
+*.cookies
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Vaqtinchalik / yuklangan fayllar
+*.part
+*.mp3
+*.mp4
+*.m4a
+*.webm
+
+# IDE
+.vscode/
+.idea/
