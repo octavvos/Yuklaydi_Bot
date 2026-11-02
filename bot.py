@@ -12,7 +12,8 @@ import yt_dlp
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.client.telegram import TelegramAPIServer
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
@@ -29,10 +30,16 @@ from aiogram.types import (
 
 import admin
 import db
-from config import ADMIN_IDS, BOT_TOKEN, COOKIES_FILE, PROXY
+from config import ADMIN_IDS, BOT_TOKEN, COOKIES_FILE, PROXY, TELEGRAM_API_URL
 
-MAX_FILE_SIZE = 50 * 1024 * 1024  # Telegram Bot API cheklovi: 50 MB
+# Telegram'ning umumiy Bot API serveri 50 MB gacha fayl qabul qiladi,
+# o'zimizning lokal Bot API serverimiz (TELEGRAM_API_URL) esa 2000 MB gacha.
+MAX_FILE_SIZE = (2000 if TELEGRAM_API_URL else 50) * 1024 * 1024
+MAX_FILE_MB = MAX_FILE_SIZE // (1024 * 1024)
+UPLOAD_TIMEOUT = 3600 if TELEGRAM_API_URL else 600  # katta faylni yuborish uchun, soniya
 MAX_PARALLEL = 3  # bir vaqtda nechta yuklash
+YOUTUBE_QUALITIES = (360, 480, 720)  # 1080p keyinchalik pullik xizmat bo'ladi
+MAX_PENDING = 1000  # tugmasi bosilmagan havolalar xotirada cheksiz to'planmasligi uchun
 
 
 def find_ffmpeg() -> str | None:
@@ -56,6 +63,7 @@ URL_RE = re.compile(
     r"[^\s]+",
     re.IGNORECASE,
 )
+YOUTUBE_RE = re.compile(r"https?://(?:www\.|m\.)?(?:youtube\.com|youtu\.be|music\.youtube\.com)/", re.IGNORECASE)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("savebot")
@@ -98,19 +106,30 @@ async def notify_admins(bot: Bot, user) -> None:
             log.warning("Adminga (%s) xabar yuborilmadi: %s", admin_id, e)
 
 
-def choice_keyboard(key: str) -> InlineKeyboardMarkup:
+def quality_keyboard(key: str) -> InlineKeyboardMarkup:
+    """YouTube uchun: sifatni tanlash yoki faqat audio."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🎬 Video", callback_data=f"v:{key}"),
-                InlineKeyboardButton(text="🎵 Audio", callback_data=f"a:{key}"),
-            ],
+            [InlineKeyboardButton(text=f"🎬 {q}p", callback_data=f"v{q}:{key}") for q in YOUTUBE_QUALITIES],
+            [InlineKeyboardButton(text="🎵 Audio (MP3)", callback_data=f"a:{key}")],
             [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"x:{key}")],
         ]
     )
 
 
-def build_opts(mode: str, out_dir: str) -> dict:
+def video_format(height: int | None) -> str:
+    """Telegram'da yaxshi ochilishi uchun avval H.264 (avc1) + m4a, keyin istalgan mos format."""
+    h = f"[height<={height}]" if height else ""
+    if HAS_FFMPEG:
+        return (
+            f"bv*{h}[vcodec^=avc1]+ba[ext=m4a]/bv*{h}[ext=mp4]+ba[ext=m4a]/"
+            f"bv*{h}+ba/b{h}/wv*+ba/w"
+        )
+    # ffmpeg bo'lmasa faqat tayyor (video+audio birga) formatlar
+    return f"b{h}[ext=mp4]/b{h}/w"
+
+
+def build_opts(mode: str, out_dir: str, height: int | None = None) -> dict:
     opts = {
         "outtmpl": os.path.join(out_dir, "%(title).80s.%(ext)s"),
         "noplaylist": True,
@@ -118,6 +137,8 @@ def build_opts(mode: str, out_dir: str) -> dict:
         "no_warnings": True,
         "max_filesize": MAX_FILE_SIZE,
         "noprogress": True,
+        # YouTube imzolarini yechish uchun JS runtime (deno yoki node) bo'lsa ishlatiladi
+        "js_runtimes": {"deno": {}, "node": {}},
     }
     if FFMPEG_PATH:
         opts["ffmpeg_location"] = FFMPEG_PATH
@@ -125,15 +146,9 @@ def build_opts(mode: str, out_dir: str) -> dict:
         opts["cookiefile"] = COOKIES_FILE
 
     if mode == "video":
+        opts["format"] = video_format(height)
         if HAS_FFMPEG:
-            opts["format"] = (
-                "bv*[ext=mp4][height<=720]+ba[ext=m4a]/"
-                "b[ext=mp4][height<=720]/bv*[height<=720]+ba/b"
-            )
             opts["merge_output_format"] = "mp4"
-        else:
-            # ffmpeg bo'lmasa faqat tayyor (video+audio birga) formatlar
-            opts["format"] = "b[ext=mp4][height<=720]/b[ext=mp4]/b"
     else:
         if HAS_FFMPEG:
             opts["format"] = "ba/b"
@@ -145,8 +160,8 @@ def build_opts(mode: str, out_dir: str) -> dict:
     return opts
 
 
-def download(url: str, mode: str, out_dir: str) -> tuple[Path, dict]:
-    with yt_dlp.YoutubeDL(build_opts(mode, out_dir)) as ydl:
+def download(url: str, mode: str, out_dir: str, height: int | None = None) -> tuple[Path, dict]:
+    with yt_dlp.YoutubeDL(build_opts(mode, out_dir, height)) as ydl:
         info = ydl.extract_info(url, download=True)
     if info.get("entries"):  # Instagram karusel va h.k.
         info = next((e for e in info["entries"] if e), info)
@@ -164,8 +179,9 @@ def download(url: str, mode: str, out_dir: str) -> tuple[Path, dict]:
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await message.answer(
-        "👋 Salom! Menga <b>YouTube</b> yoki <b>Instagram</b> havolasini yuboring.\n"
-        "Men sizdan <b>video</b> yoki <b>audio</b> formatini so'rayman va yuklab beraman."
+        "👋 Salom! Menga <b>YouTube</b> yoki <b>Instagram</b> havolasini yuboring.\n\n"
+        f"▶️ YouTube: sifatni tanlaysiz ({', '.join(f'{q}p' for q in YOUTUBE_QUALITIES)}) yoki faqat audio.\n"
+        "📸 Instagram: video darhol yuklanadi."
     )
 
 
@@ -174,12 +190,30 @@ async def cmd_id(message: Message) -> None:
     await message.answer(f"🆔 Sizning Telegram ID: <code>{message.from_user.id}</code>")
 
 
+@router.message(Command("light"))
+async def cmd_light(message: Message) -> None:
+    await message.answer(
+        "💡 <b>L I G H T</b> 💡\n\n"
+        "🇺🇿 Bu botni <b>Light</b> tayyorlagan.\n"
+        "🇬🇧 This bot was made by <b>Light</b>.\n"
+        "🇷🇺 Этот бот создал <b>Light</b>.\n\n"
+        "<tg-spoiler>⚡ © Light — ✦ L·∞·T ✦</tg-spoiler>"
+    )
+
+
 @router.message(F.text.regexp(URL_RE))
-async def on_link(message: Message) -> None:
+async def on_link(message: Message, bot: Bot) -> None:
     url = URL_RE.search(message.text).group(0)
-    key = uuid.uuid4().hex[:12]
-    pending_links[key] = url
-    await message.reply("Qaysi formatda yuklab beray?", reply_markup=choice_keyboard(key))
+    if YOUTUBE_RE.match(url):
+        key = uuid.uuid4().hex[:12]
+        while len(pending_links) >= MAX_PENDING:
+            pending_links.pop(next(iter(pending_links)))  # eng eskisini o'chiramiz
+        pending_links[key] = url
+        await message.reply("🎞 Qaysi sifatda yuklab beray?", reply_markup=quality_keyboard(key))
+        return
+    # Instagram va boshqalar: tanlovsiz, darhol eng yaxshi video
+    status = await message.reply("⏳ Video yuklanmoqda, biroz kuting...")
+    await process_download(bot, status, message.from_user.id, url, "video")
 
 
 @router.message(F.text)
@@ -187,7 +221,7 @@ async def on_other_text(message: Message) -> None:
     await message.answer("⚠️ Iltimos, YouTube yoki Instagram havolasini yuboring.")
 
 
-@router.callback_query(F.data.regexp(r"^[vax]:[0-9a-f]{12}$"))
+@router.callback_query(F.data.regexp(r"^(v\d{3,4}|a|x):[0-9a-f]{12}$"))
 async def on_choice(call: CallbackQuery, bot: Bot) -> None:
     action, key = call.data.split(":", 1)
     url = pending_links.pop(key, None)
@@ -200,23 +234,34 @@ async def on_choice(call: CallbackQuery, bot: Bot) -> None:
         await call.answer("Havola eskirgan, qaytadan yuboring.", show_alert=True)
         return
 
-    mode = "video" if action == "v" else "audio"
+    height = None
+    if action.startswith("v"):
+        height = int(action[1:])
+        if height not in YOUTUBE_QUALITIES:  # qo'lda yasalgan callback_data dan himoya
+            await call.answer("Bu sifat mavjud emas.", show_alert=True)
+            return
+    mode = "video" if height else "audio"
     await call.answer()
-    status = await call.message.edit_text(
-        f"⏳ {'Video' if mode == 'video' else 'Audio'} yuklanmoqda, biroz kuting..."
-    )
+    label = f"Video ({height}p)" if height else "Audio"
+    status = await call.message.edit_text(f"⏳ {label} yuklanmoqda, biroz kuting...")
+    await process_download(bot, status, call.from_user.id, url, mode, height)
 
-    chat_id = call.message.chat.id
-    user_id = call.from_user.id
+
+async def process_download(
+    bot: Bot, status: Message, user_id: int, url: str, mode: str, height: int | None = None
+) -> None:
+    """Yuklab oladi, Telegramga yuboradi va status xabarini natijaga qarab yangilaydi."""
+    chat_id = status.chat.id
     tmp_dir = tempfile.mkdtemp(prefix="savebot_")
     try:
         async with semaphore:
-            file, info = await asyncio.to_thread(download, url, mode, tmp_dir)
+            file, info = await asyncio.to_thread(download, url, mode, tmp_dir, height)
 
         await status.edit_text("📤 Telegramga yuborilmoqda...")
         title = info.get("title") or "media"
         caption = f"<b>{html.escape(title[:900])}</b>\n\n🤖 @{(await bot.me()).username}"
         media = FSInputFile(file)
+        duration = int(info["duration"]) if info.get("duration") else None
 
         if mode == "video":
             await bot.send_chat_action(chat_id, ChatAction.UPLOAD_VIDEO)
@@ -224,10 +269,11 @@ async def on_choice(call: CallbackQuery, bot: Bot) -> None:
                 chat_id,
                 media,
                 caption=caption,
-                duration=int(info["duration"]) if info.get("duration") else None,
+                duration=duration,
                 width=info.get("width"),
                 height=info.get("height"),
                 supports_streaming=True,
+                request_timeout=UPLOAD_TIMEOUT,
             )
         else:
             await bot.send_chat_action(chat_id, ChatAction.UPLOAD_VOICE)
@@ -237,28 +283,41 @@ async def on_choice(call: CallbackQuery, bot: Bot) -> None:
                 caption=caption,
                 title=title[:64],
                 performer=info.get("artist") or info.get("uploader"),
-                duration=int(info["duration"]) if info.get("duration") else None,
+                duration=duration,
+                request_timeout=UPLOAD_TIMEOUT,
             )
-        await status.delete()
+        await safe_edit(status, delete=True)
         db.log_download(user_id, url, mode, ok=True, title=title)
     except TooLargeError:
         db.log_download(user_id, url, mode, ok=False)
-        await status.edit_text("⚠️ Fayl 50 MB dan katta, Telegram orqali yuborib bo'lmaydi.")
+        hint = " Pastroq sifatni tanlab ko'ring." if height and height > YOUTUBE_QUALITIES[0] else ""
+        await safe_edit(status, f"⚠️ Fayl {MAX_FILE_MB} MB dan katta, Telegram orqali yuborib bo'lmaydi.{hint}")
     except yt_dlp.utils.DownloadError as e:
         log.warning("Download error for %s: %s", url, e)
         db.log_download(user_id, url, mode, ok=False)
         msg = str(e).lower()
-        if "login" in msg or "private" in msg or "cookies" in msg:
+        if "login" in msg or "private" in msg or "cookies" in msg or "sign in" in msg:
             text = "🔒 Bu kontent yopiq yoki kirish talab qiladi."
         else:
             text = "❌ Yuklab bo'lmadi. Havola to'g'riligini tekshiring."
-        await status.edit_text(text)
+        await safe_edit(status, text)
     except Exception:
         log.exception("Unexpected error for %s", url)
         db.log_download(user_id, url, mode, ok=False)
-        await status.edit_text("❌ Kutilmagan xatolik yuz berdi. Keyinroq urinib ko'ring.")
+        await safe_edit(status, "❌ Kutilmagan xatolik yuz berdi. Keyinroq urinib ko'ring.")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def safe_edit(status: Message, text: str = "", delete: bool = False) -> None:
+    """Status xabarini o'zgartiradi/o'chiradi; foydalanuvchi uni o'chirib yuborgan bo'lsa ham yiqilmaydi."""
+    try:
+        if delete:
+            await status.delete()
+        else:
+            await status.edit_text(text)
+    except TelegramBadRequest as e:
+        log.debug("Status xabarini yangilab bo'lmadi: %s", e)
 
 
 async def set_commands(bot: Bot) -> None:
@@ -287,7 +346,11 @@ async def main() -> None:
         raise SystemExit("BOT_TOKEN topilmadi. .env fayliga BOT_TOKEN=... yozing.")
     if not HAS_FFMPEG:
         log.warning("ffmpeg topilmadi: audio m4a formatda, video esa past sifatda bo'lishi mumkin.")
-    session = AiohttpSession(proxy=PROXY) if PROXY else AiohttpSession()
+    session_kwargs = {"proxy": PROXY} if PROXY else {}
+    if TELEGRAM_API_URL:
+        # Lokal Bot API server: 2000 MB gacha fayl yuborish mumkin
+        session_kwargs["api"] = TelegramAPIServer.from_base(TELEGRAM_API_URL, is_local=True)
+    session = AiohttpSession(**session_kwargs)
     bot = Bot(BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
     # Ishga tushishda internet uzilib qolsa, yiqilmasdan qayta urinamiz
@@ -301,7 +364,7 @@ async def main() -> None:
             await asyncio.sleep(delay)
             delay = min(delay * 2, 60)
 
-    log.info("Bot ishga tushdi: @%s", me.username)
+    log.info("Bot ishga tushdi: @%s (fayl chegarasi: %s MB)", me.username, MAX_FILE_MB)
     if not ADMIN_IDS:
         log.warning("ADMIN_IDS bo'sh: admin buyruqlari ishlamaydi. .env ga ADMIN_IDS=... yozing (ID ni /id orqali bilasiz).")
 

@@ -10,3 +10,5 @@ ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split("
 COOKIES_FILE = os.getenv("COOKIES_FILE")  # ixtiyoriy: Instagram/YouTube uchun cookies.txt
 PROXY = os.getenv("PROXY")  # ixtiyoriy: masalan http://127.0.0.1:8080 yoki socks5://127.0.0.1:1080
 DB_PATH = os.getenv("DB_PATH", "bot.db")
+# Ixtiyoriy: lokal Telegram Bot API server (50 MB dan katta fayllar uchun), masalan http://127.0.0.1:8081
+TELEGRAM_API_URL = os.getenv("TELEGRAM_API_URL")
