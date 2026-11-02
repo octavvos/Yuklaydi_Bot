@@ -19,8 +19,12 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git python3 python3-venv f
 
 echo "==> deno (yt-dlp YouTube uchun JS runtime)"
 if ! command -v deno &>/dev/null; then
-    curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y >/dev/null \
+    # GitHub'dan: dl.deno.land ba'zi serverlardan juda sekin yuklanadi
+    { curl -fsSL -m 300 -o /tmp/deno.zip \
+        https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip \
+        && unzip -oq /tmp/deno.zip -d /usr/local/bin && chmod +x /usr/local/bin/deno; } \
         || echo "⚠️  deno o'rnatilmadi, YouTube'da ba'zi formatlar chiqmasligi mumkin"
+    rm -f /tmp/deno.zip
 fi
 
 echo "==> Bot uchun alohida foydalanuvchi"
@@ -67,7 +71,7 @@ if [ -z "$(env_get TELEGRAM_API_URL)" ]; then
             -p 127.0.0.1:8081:8081 \
             -e TELEGRAM_API_ID="$TELEGRAM_API_ID" -e TELEGRAM_API_HASH="$TELEGRAM_API_HASH" -e TELEGRAM_LOCAL=1 \
             -v telegram-bot-api-data:/var/lib/telegram-bot-api \
-            aiogram/telegram-bot-api:latest >/dev/null
+            aiogram/telegram-bot-api:latest >/dev/null 2>&1
         # Botni Telegram'ning umumiy serveridan chiqaramiz, aks holda xabarlar lokal serverga kelmasligi mumkin
         TOKEN="$(env_get BOT_TOKEN)"
         curl -fsS "https://api.telegram.org/bot$TOKEN/logOut" >/dev/null || true
