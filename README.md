@@ -1,6 +1,7 @@
 # YouTube / Instagram yuklovchi bot (aiogram 3)
 
-Foydalanuvchi YouTube yoki Instagram havolasini yuboradi → bot **🎬 Video / 🎵 Audio** tugmalarini chiqaradi → tanlangan formatda yuklab, Telegramga yuboradi.
+- **YouTube** havolasi → bot sifat tugmalarini chiqaradi: **360p / 480p / 720p** yoki **🎵 Audio (MP3)** → tanlangan sifatda yuklab, Telegramga yuboradi.
+- **Instagram** havolasi → video tanlovsiz, darhol yuklanadi.
 
 ## O'rnatish
 ```bash
@@ -20,6 +21,7 @@ ffmpeg tizimda bo'lmasa ham ishlaydi: `imageio-ffmpeg` paketi ichidagi ffmpeg is
 | `DB_PATH` | SQLite baza fayli (standart: `bot.db`) |
 | `COOKIES_FILE` | Ixtiyoriy. `cookies.txt` yo'li — yopiq/login talab qiladigan Instagram postlari uchun |
 | `PROXY` | Ixtiyoriy. Telegram bloklangan bo'lsa: `http://host:port` yoki `socks5://host:port` |
+| `TELEGRAM_API_URL` | Ixtiyoriy. Lokal Bot API server manzili (masalan `http://127.0.0.1:8081`). Bo'lsa fayl chegarasi **2000 MB**, bo'lmasa 50 MB |
 
 ## Admin panel
 `.env` dagi `ADMIN_IDS` ga ID ingizni yozib, botni qayta ishga tushiring. Admin buyruqlari faqat adminlarga ishlaydi va faqat ularning menyusida ko'rinadi:
@@ -36,9 +38,24 @@ ffmpeg tizimda bo'lmasa ham ishlaydi: `imageio-ffmpeg` paketi ichidagi ffmpeg is
 Yangi foydalanuvchi botga kirganda adminlarga avtomatik xabar keladi.
 
 ## Cheklovlar
-- Telegram Bot API orqali fayl hajmi **50 MB** gacha. Video 720p gacha olinadi, kattaroq bo'lsa bot ogohlantiradi.
+- Telegram'ning umumiy Bot API serveri orqali fayl hajmi **50 MB** gacha. Undan kattasi uchun lokal Bot API server kerak (pastda), u bilan **2000 MB** gacha.
+- YouTube uchun eng yuqori sifat 720p.
+
+## 50 MB dan katta fayllar (lokal Bot API server)
+1. [my.telegram.org](https://my.telegram.org) → **API development tools** → `api_id` va `api_hash` oling.
+2. Serverda `deploy/install.sh` ni ishga tushiring va so'ralganda ularni kiriting. Skript Docker'da `aiogram/telegram-bot-api` ni ishga tushiradi, botni umumiy serverdan chiqaradi (`logOut`) va `.env` ga `TELEGRAM_API_URL` yozadi.
+
+Qo'lda sozlash:
+```bash
+docker run -d --name telegram-bot-api --restart always -p 127.0.0.1:8081:8081 \
+  -e TELEGRAM_API_ID=... -e TELEGRAM_API_HASH=... -e TELEGRAM_LOCAL=1 \
+  -v telegram-bot-api-data:/var/lib/telegram-bot-api aiogram/telegram-bot-api:latest
+curl https://api.telegram.org/bot<TOKEN>/logOut      # bir marta
+echo "TELEGRAM_API_URL=http://127.0.0.1:8081" >> .env
+```
 - Instagram ba'zan login talab qiladi — unda brauzerdan `cookies.txt` eksport qilib, `COOKIES_FILE` ga ko'rsating.
-- yt-dlp ni vaqti-vaqti bilan yangilab turing: `./venv/bin/pip install -U yt-dlp`
+- yt-dlp ni vaqti-vaqti bilan yangilab turing: `./venv/bin/pip install -U "yt-dlp[default]"`
+- YouTube uchun serverda [deno](https://deno.com) bo'lgani yaxshi (yt-dlp talab qiladi); `install.sh` uni o'rnatadi.
 
 ## Serverga joylash (Ubuntu/Debian)
 Python 3.10 yoki undan yangi versiya kerak.
