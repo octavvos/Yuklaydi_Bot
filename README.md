@@ -62,8 +62,8 @@ Python 3.10 yoki undan yangi versiya kerak.
 
 ```bash
 sudo apt update && sudo apt install -y git python3-venv ffmpeg
-git clone https://github.com/octavvos/Yuklaydi_Bot.git
-cd Yuklaydi_Bot
+git clone https://github.com/octavvos/yuklaydi-bot.git
+cd yuklaydi-bot
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 cp .env.example .env && nano .env        # BOT_TOKEN va ADMIN_IDS ni yozing
@@ -86,7 +86,7 @@ git pull && ./venv/bin/pip install -r requirements.txt && sudo systemctl restart
 
 Yoki hammasini bitta skript bilan (root sifatida, serverda):
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/octavvos/Yuklaydi_Bot/main/deploy/install.sh && bash install.sh
+curl -fsSLO https://raw.githubusercontent.com/octavvos/yuklaydi-bot/main/deploy/install.sh && bash install.sh
 ```
 
 > Bitta token bilan faqat bitta bot ishlay oladi: serverda ishga tushirgandan keyin kompyuteringizdagi botni o'chiring.
