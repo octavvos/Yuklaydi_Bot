@@ -6,7 +6,7 @@
 # (my.telegram.org -> API development tools). Enter bosilsa, bu qadam o'tkazib yuboriladi.
 set -euo pipefail
 
-REPO="https://github.com/octavvos/Yuklaydi_Bot.git"
+REPO="https://github.com/octavvos/yuklaydi-bot.git"
 APP_DIR="/opt/Yuklaydi_Bot"
 APP_USER="yuklaydi"
 SERVICE="yuklaydi-bot"
